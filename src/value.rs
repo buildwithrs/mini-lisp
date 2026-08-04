@@ -75,7 +75,6 @@ pub fn eval(expr: &Expr, env: EnvRef) -> Result<Value, EvalError> {
         Expr::Nil => Ok(Value::Nil),
         Expr::Symbol(sym) => Ok(Env::lookup(&env, &sym).ok_or_else(|| EvalError::UndefinedSymbol)?),
         Expr::List(list_expr) => Ok(eval_list(list_expr, env.clone())?),
-        _ => Err(EvalError::BadSpecialForm("unknown expr")),
     }
 }
 
@@ -223,5 +222,534 @@ pub fn expect_list(v: &Value) -> Result<&[Value], EvalError> {
         Value::Nil => Ok(&[]),
         Value::List(items) => Ok(items),
         _ => Err(EvalError::BadArg("list")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fresh() -> EnvRef {
+        Env::root()
+    }
+
+    fn run(expr: &Expr) -> Result<Value, EvalError> {
+        eval(expr, fresh())
+    }
+
+    fn run_in(expr: &Expr, env: EnvRef) -> Result<Value, EvalError> {
+        eval(expr, env)
+    }
+
+    fn expect_int(v: Value) -> i64 {
+        match v {
+            Value::Integer(n) => n,
+            _ => panic!("expected Integer"),
+        }
+    }
+
+    fn expect_nil(v: Value) {
+        match v {
+            Value::Nil => {}
+            _ => panic!("expected Nil"),
+        }
+    }
+
+    fn expect_lambda(v: Value) {
+        match v {
+            Value::Lambda(_) => {}
+            _ => panic!("expected Lambda"),
+        }
+    }
+
+    fn mk_builtin(name: &'static str, f: BuiltinFn) -> Value {
+        Value::Builtin(Builtin { name, function: f })
+    }
+
+    fn add_2(args: &[Value]) -> Result<Value, EvalError> {
+        expect_arity(args, 2)?;
+        Ok(Value::Integer(
+            expect_integer(&args[0])? + expect_integer(&args[1])?,
+        ))
+    }
+
+    // ===== Display =====
+
+    #[test]
+    fn display_integer() {
+        assert_eq!(format!("{}", Value::Integer(42)), "42");
+    }
+
+    #[test]
+    fn display_boolean() {
+        assert_eq!(format!("{}", Value::Boolean(true)), "#t");
+        assert_eq!(format!("{}", Value::Boolean(false)), "#f");
+    }
+
+    #[test]
+    fn display_nil() {
+        assert_eq!(format!("{}", Value::Nil), "nil");
+    }
+
+    #[test]
+    fn display_string() {
+        assert_eq!(format!("{}", Value::Str("hi".into())), "\"hi\"");
+    }
+
+    #[test]
+    fn display_symbol() {
+        assert_eq!(format!("{}", Value::Symbol("foo".into())), "foo");
+    }
+
+    #[test]
+    fn display_list() {
+        let v = Value::list(vec![Value::Integer(1), Value::Integer(2)]);
+        assert_eq!(format!("{}", v), "(1 2)");
+    }
+
+    #[test]
+    fn display_empty_list_is_nil() {
+        let v = Value::list(vec![]);
+        assert_eq!(format!("{}", v), "nil");
+    }
+
+    // ===== Value::list invariant =====
+
+    #[test]
+    fn list_helper_makes_nil_for_empty() {
+        assert!(matches!(Value::list(vec![]), Value::Nil));
+    }
+
+    #[test]
+    fn list_helper_makes_list_for_non_empty() {
+        match Value::list(vec![Value::Integer(1)]) {
+            Value::List(items) => assert_eq!(items.len(), 1),
+            _ => panic!("expected List"),
+        }
+    }
+
+    // ===== self-evaluating =====
+
+    #[test]
+    fn integer_self_evaluates() {
+        assert_eq!(expect_int(run(&Expr::Integer(42)).unwrap()), 42);
+    }
+
+    #[test]
+    fn boolean_self_evaluates() {
+        assert!(matches!(
+            run(&Expr::Boolean(true)).unwrap(),
+            Value::Boolean(true)
+        ));
+        assert!(matches!(
+            run(&Expr::Boolean(false)).unwrap(),
+            Value::Boolean(false)
+        ));
+    }
+
+    #[test]
+    fn nil_self_evaluates() {
+        expect_nil(run(&Expr::Nil).unwrap());
+    }
+
+    #[test]
+    fn string_self_evaluates() {
+        assert!(matches!(
+            run(&Expr::Str("hi".into())).unwrap(),
+            Value::Str(s) if s == "hi"
+        ));
+    }
+
+    // ===== symbol lookup =====
+
+    #[test]
+    fn symbol_looks_up_in_env() {
+        let env = fresh();
+        Env::define(&env, "answer".into(), Value::Integer(42));
+        assert_eq!(
+            expect_int(run_in(&Expr::Symbol("answer".into()), env).unwrap()),
+            42
+        );
+    }
+
+    #[test]
+    fn undefined_symbol_is_error() {
+        assert!(matches!(
+            run(&Expr::Symbol("missing".into())),
+            Err(EvalError::UndefinedSymbol)
+        ));
+    }
+
+    #[test]
+    fn symbol_walks_parent_chain() {
+        let parent = fresh();
+        Env::define(&parent, "x".into(), Value::Integer(1));
+        let child = Env::child(parent.clone());
+        Env::define(&child, "y".into(), Value::Integer(2));
+        assert_eq!(
+            expect_int(run_in(&Expr::Symbol("x".into()), child).unwrap()),
+            1
+        );
+    }
+
+    // ===== quote =====
+
+    #[test]
+    fn quote_returns_data_unchanged() {
+        let expr = Expr::List(vec![
+            Expr::Symbol("quote".into()),
+            Expr::List(vec![Expr::Integer(1), Expr::Integer(2)]),
+        ]);
+        let result = run(&expr).unwrap();
+        match result {
+            Value::List(items) => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(expect_int(items[0].clone()), 1);
+                assert_eq!(expect_int(items[1].clone()), 2);
+            }
+            _ => panic!("expected List"),
+        }
+    }
+
+    #[test]
+    fn quote_does_not_evaluate_symbol() {
+        let expr = Expr::List(vec![
+            Expr::Symbol("quote".into()),
+            Expr::Symbol("missing".into()),
+        ]);
+        let result = run(&expr).unwrap();
+        assert!(matches!(result, Value::Symbol(s) if s == "missing"));
+    }
+
+    #[test]
+    fn quote_nested_lists() {
+        // '(1 (2 3))  =>  (1 (2 3))
+        let expr = Expr::List(vec![
+            Expr::Symbol("quote".into()),
+            Expr::List(vec![
+                Expr::Integer(1),
+                Expr::List(vec![Expr::Integer(2), Expr::Integer(3)]),
+            ]),
+        ]);
+        let result = run(&expr).unwrap();
+        match result {
+            Value::List(outer) => {
+                assert_eq!(outer.len(), 2);
+                assert_eq!(expect_int(outer[0].clone()), 1);
+                match &outer[1] {
+                    Value::List(inner) => {
+                        assert_eq!(inner.len(), 2);
+                        assert_eq!(expect_int(inner[0].clone()), 2);
+                        assert_eq!(expect_int(inner[1].clone()), 3);
+                    }
+                    _ => panic!("expected nested List"),
+                }
+            }
+            _ => panic!("expected List"),
+        }
+    }
+
+    // ===== if =====
+
+    #[test]
+    fn if_takes_then_branch_when_truthy() {
+        let expr = Expr::List(vec![
+            Expr::Symbol("if".into()),
+            Expr::Boolean(true),
+            Expr::Integer(1),
+            Expr::Integer(2),
+        ]);
+        assert_eq!(expect_int(run(&expr).unwrap()), 1);
+    }
+
+    #[test]
+    fn if_takes_else_branch_when_false() {
+        let expr = Expr::List(vec![
+            Expr::Symbol("if".into()),
+            Expr::Boolean(false),
+            Expr::Integer(1),
+            Expr::Integer(2),
+        ]);
+        assert_eq!(expect_int(run(&expr).unwrap()), 2);
+    }
+
+    #[test]
+    fn if_takes_else_branch_when_nil() {
+        let expr = Expr::List(vec![
+            Expr::Symbol("if".into()),
+            Expr::Nil,
+            Expr::Integer(1),
+            Expr::Integer(2),
+        ]);
+        assert_eq!(expect_int(run(&expr).unwrap()), 2);
+    }
+
+    #[test]
+    fn zero_is_truthy() {
+        let expr = Expr::List(vec![
+            Expr::Symbol("if".into()),
+            Expr::Integer(0),
+            Expr::Integer(1),
+            Expr::Integer(2),
+        ]);
+        assert_eq!(expect_int(run(&expr).unwrap()), 1);
+    }
+
+    #[test]
+    fn empty_string_is_truthy() {
+        let expr = Expr::List(vec![
+            Expr::Symbol("if".into()),
+            Expr::Str(String::new()),
+            Expr::Integer(1),
+            Expr::Integer(2),
+        ]);
+        assert_eq!(expect_int(run(&expr).unwrap()), 1);
+    }
+
+    #[test]
+    fn if_skips_else_branch_with_undefined_symbol() {
+        let expr = Expr::List(vec![
+            Expr::Symbol("if".into()),
+            Expr::Boolean(true),
+            Expr::Integer(1),
+            Expr::Symbol("missing-else".into()),
+        ]);
+        assert_eq!(expect_int(run(&expr).unwrap()), 1);
+    }
+
+    #[test]
+    fn if_skips_then_branch_with_undefined_symbol() {
+        let expr = Expr::List(vec![
+            Expr::Symbol("if".into()),
+            Expr::Boolean(false),
+            Expr::Symbol("missing-then".into()),
+            Expr::Integer(99),
+        ]);
+        assert_eq!(expect_int(run(&expr).unwrap()), 99);
+    }
+
+    #[test]
+    fn if_wrong_arity_is_error() {
+        let expr = Expr::List(vec![
+            Expr::Symbol("if".into()),
+            Expr::Boolean(true),
+            Expr::Integer(1),
+        ]);
+        assert!(matches!(
+            run(&expr),
+            Err(EvalError::BadSpecialForm("if"))
+        ));
+    }
+
+    // ===== define =====
+
+    #[test]
+    fn define_binds_value_in_env() {
+        let env = fresh();
+        let expr = Expr::List(vec![
+            Expr::Symbol("define".into()),
+            Expr::Symbol("x".into()),
+            Expr::Integer(42),
+        ]);
+        run_in(&expr, env.clone()).unwrap();
+        assert_eq!(
+            expect_int(run_in(&Expr::Symbol("x".into()), env).unwrap()),
+            42
+        );
+    }
+
+    #[test]
+    fn define_wrong_arity_is_error() {
+        let expr = Expr::List(vec![
+            Expr::Symbol("define".into()),
+            Expr::Symbol("x".into()),
+        ]);
+        assert!(matches!(
+            run(&expr),
+            Err(EvalError::BadSpecialForm("define"))
+        ));
+    }
+
+    #[test]
+    fn define_non_symbol_target_is_error() {
+        let expr = Expr::List(vec![
+            Expr::Symbol("define".into()),
+            Expr::Integer(1),
+            Expr::Integer(2),
+        ]);
+        assert!(matches!(run(&expr), Err(EvalError::BadSpecialForm(_))));
+    }
+
+    // ===== begin =====
+
+    #[test]
+    fn begin_returns_last_value() {
+        let env = fresh();
+        Env::define(&env, "x".into(), Value::Integer(10));
+        let expr = Expr::List(vec![
+            Expr::Symbol("begin".into()),
+            Expr::Integer(1),
+            Expr::Integer(2),
+            Expr::Symbol("x".into()),
+        ]);
+        assert_eq!(expect_int(run_in(&expr, env).unwrap()), 10);
+    }
+
+    #[test]
+    fn empty_begin_returns_nil() {
+        let expr = Expr::List(vec![Expr::Symbol("begin".into())]);
+        expect_nil(run(&expr).unwrap());
+    }
+
+    // ===== lambda =====
+
+    #[test]
+    fn lambda_creates_lambda_without_evaluating_body() {
+        let expr = Expr::List(vec![
+            Expr::Symbol("lambda".into()),
+            Expr::List(vec![Expr::Symbol("x".into())]),
+            Expr::Symbol("missing".into()),
+        ]);
+        expect_lambda(run(&expr).unwrap());
+    }
+
+    #[test]
+    fn lambda_zero_params() {
+        let expr = Expr::List(vec![
+            Expr::Symbol("lambda".into()),
+            Expr::Nil,
+            Expr::Integer(42),
+        ]);
+        expect_lambda(run(&expr).unwrap());
+    }
+
+    #[test]
+    fn lambda_no_body_is_error() {
+        let expr = Expr::List(vec![
+            Expr::Symbol("lambda".into()),
+            Expr::List(vec![Expr::Symbol("x".into())]),
+        ]);
+        assert!(matches!(
+            run(&expr),
+            Err(EvalError::BadSpecialForm("lambda"))
+        ));
+    }
+
+    // ===== function calls =====
+
+    #[test]
+    fn call_builtin_function() {
+        let env = fresh();
+        Env::define(&env, "+".into(), mk_builtin("+", add_2));
+        let expr = Expr::List(vec![
+            Expr::Symbol("+".into()),
+            Expr::Integer(1),
+            Expr::Integer(2),
+        ]);
+        assert_eq!(expect_int(run_in(&expr, env).unwrap()), 3);
+    }
+
+    #[test]
+    fn call_closure_with_args() {
+        let env = fresh();
+        Env::define(&env, "+".into(), mk_builtin("+", add_2));
+        let lambda = Expr::List(vec![
+            Expr::Symbol("lambda".into()),
+            Expr::List(vec![Expr::Symbol("x".into()), Expr::Symbol("y".into())]),
+            Expr::List(vec![
+                Expr::Symbol("+".into()),
+                Expr::Symbol("x".into()),
+                Expr::Symbol("y".into()),
+            ]),
+        ]);
+        Env::define(&env, "add".into(), run_in(&lambda, env.clone()).unwrap());
+        let call = Expr::List(vec![
+            Expr::Symbol("add".into()),
+            Expr::Integer(3),
+            Expr::Integer(4),
+        ]);
+        assert_eq!(expect_int(run_in(&call, env).unwrap()), 7);
+    }
+
+    #[test]
+    fn closure_wrong_arity_is_error() {
+        let env = fresh();
+        let lambda = Expr::List(vec![
+            Expr::Symbol("lambda".into()),
+            Expr::List(vec![Expr::Symbol("x".into())]),
+            Expr::Symbol("x".into()),
+        ]);
+        Env::define(&env, "f".into(), run_in(&lambda, env.clone()).unwrap());
+        let call = Expr::List(vec![
+            Expr::Symbol("f".into()),
+            Expr::Integer(1),
+            Expr::Integer(2),
+        ]);
+        assert!(matches!(run_in(&call, env), Err(EvalError::ArgNotMatch)));
+    }
+
+    #[test]
+    fn calling_non_callable_is_error() {
+        let expr = Expr::List(vec![Expr::Integer(42), Expr::Integer(1)]);
+        assert!(matches!(run(&expr), Err(EvalError::NotCallable(_))));
+    }
+
+    #[test]
+    fn empty_application_is_error() {
+        let expr = Expr::List(vec![]);
+        assert!(matches!(run(&expr), Err(EvalError::EmptyApplication)));
+    }
+
+    // ===== lexical scope =====
+
+    #[test]
+    fn closure_captures_defining_environment() {
+        // (begin
+        //   (define make-adder (lambda (x) (lambda (y) (+ x y))))
+        //   (define add-two (make-adder 2))
+        //   (add-two 5))   ; => 7
+        let env = fresh();
+        Env::define(&env, "+".into(), mk_builtin("+", add_2));
+
+        // (define make-adder (lambda (x) (lambda (y) (+ x y))))
+        let inner_lambda = Expr::List(vec![
+            Expr::Symbol("lambda".into()),
+            Expr::List(vec![Expr::Symbol("y".into())]),
+            Expr::List(vec![
+                Expr::Symbol("+".into()),
+                Expr::Symbol("x".into()),
+                Expr::Symbol("y".into()),
+            ]),
+        ]);
+        let make_adder_lambda = Expr::List(vec![
+            Expr::Symbol("lambda".into()),
+            Expr::List(vec![Expr::Symbol("x".into())]),
+            inner_lambda,
+        ]);
+        let define_maker = Expr::List(vec![
+            Expr::Symbol("define".into()),
+            Expr::Symbol("make-adder".into()),
+            make_adder_lambda,
+        ]);
+        run_in(&define_maker, env.clone()).unwrap();
+
+        // (define add-two (make-adder 2))
+        let call_maker = Expr::List(vec![
+            Expr::Symbol("make-adder".into()),
+            Expr::Integer(2),
+        ]);
+        let define_add_two = Expr::List(vec![
+            Expr::Symbol("define".into()),
+            Expr::Symbol("add-two".into()),
+            call_maker,
+        ]);
+        run_in(&define_add_two, env.clone()).unwrap();
+
+        // (add-two 5)
+        let call_add_two = Expr::List(vec![
+            Expr::Symbol("add-two".into()),
+            Expr::Integer(5),
+        ]);
+        assert_eq!(expect_int(run_in(&call_add_two, env).unwrap()), 7);
     }
 }
