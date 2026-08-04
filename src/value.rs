@@ -43,6 +43,35 @@ impl Value {
     }
 }
 
+impl fmt::Debug for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Value::Integer(n) => write!(f, "Integer({})", n),
+            Value::Boolean(b) => write!(f, "Boolean({})", b),
+            Value::Str(s) => write!(f, "Str({:?})", s),
+            Value::Symbol(s) => write!(f, "Symbol({:?})", s),
+            Value::Nil => write!(f, "Nil"),
+            Value::List(items) => f.debug_list().entries(items).finish(),
+            Value::Builtin(b) => write!(f, "Builtin({:?})", b.name),
+            Value::Lambda(_) => write!(f, "Lambda(<fn>)"),
+        }
+    }
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Value::Integer(a), Value::Integer(b)) => a == b,
+            (Value::Boolean(a), Value::Boolean(b)) => a == b,
+            (Value::Str(a), Value::Str(b)) => a == b,
+            (Value::Symbol(a), Value::Symbol(b)) => a == b,
+            (Value::Nil, Value::Nil) => true,
+            (Value::List(a), Value::List(b)) => a == b,
+            _ => false,  // Builtin and Lambda are never equal to anything
+        }
+    }
+}
+
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -121,8 +150,10 @@ fn apply_lambda(lambda: &Lambda, args: &[Value]) -> Result<Value, EvalError> {
 }
 
 fn eval_quote(args: &[Expr]) -> Result<Value, EvalError> {
-    let first = args.first().ok_or(EvalError::BadSpecialForm("quote"))?;
-    Ok(quote_to_value(first))
+    if args.len() != 1 {
+        return Err(EvalError::BadSpecialForm("quote"));
+    }
+    Ok(quote_to_value(&args[0]))
 }
 
 fn quote_to_value(expr: &Expr) -> Value {
@@ -132,7 +163,7 @@ fn quote_to_value(expr: &Expr) -> Value {
         Expr::Str(v) => Value::Str(v.clone()),
         Expr::Nil => Value::Nil,
         Expr::Symbol(v) => Value::Symbol(v.clone()),
-        Expr::List(items) => Value::List(items.iter().map(quote_to_value).collect()),
+        Expr::List(items) => Value::list(items.iter().map(quote_to_value).collect()),
     }
 }
 
@@ -160,8 +191,9 @@ fn eval_define(args: &[Expr], env: EnvRef) -> Result<Value, EvalError> {
         _ => return Err(EvalError::BadSpecialForm("define need name")),
     };
 
-    Env::define(&env, name, eval(&args[1], env.clone())?);
-    Ok(Value::Nil)
+    let val = eval(&args[1], env.clone())?;
+    Env::define(&env, name, val.clone());
+    Ok(val)
 }
 
 fn eval_lambda(args: &[Expr], env: EnvRef) -> Result<Value, EvalError> {
@@ -182,7 +214,13 @@ fn eval_lambda(args: &[Expr], env: EnvRef) -> Result<Value, EvalError> {
                     return Err(EvalError::BadSpecialForm("lambda"));
                 }
             }
-            ps.dedup();
+
+            let mut sorted = ps.clone();
+            sorted.sort();
+            sorted.dedup();
+            if sorted.len() != ps.len() {
+                return Err(EvalError::BadSpecialForm("duplicate parameter"));
+            }
             ps
         }
         _ => return Err(EvalError::BadSpecialForm("lambda")),
@@ -204,7 +242,6 @@ fn eval_begin(exprs: &[Expr], env: EnvRef) -> Result<Value, EvalError> {
     Ok(last)
 }
 
-
 pub fn expect_arity(args: &[Value], n: usize) -> Result<(), EvalError> {
     if args.len() != n {
         Err(EvalError::ArgNotMatch)
@@ -214,7 +251,11 @@ pub fn expect_arity(args: &[Value], n: usize) -> Result<(), EvalError> {
 }
 
 pub fn expect_integer(v: &Value) -> Result<i64, EvalError> {
-    if let Value::Integer(n) = v { Ok(*n) } else { Err(EvalError::BadArg("integer")) }
+    if let Value::Integer(n) = v {
+        Ok(*n)
+    } else {
+        Err(EvalError::BadArg("integer"))
+    }
 }
 
 pub fn expect_list(v: &Value) -> Result<&[Value], EvalError> {
@@ -535,10 +576,7 @@ mod tests {
             Expr::Boolean(true),
             Expr::Integer(1),
         ]);
-        assert!(matches!(
-            run(&expr),
-            Err(EvalError::BadSpecialForm("if"))
-        ));
+        assert!(matches!(run(&expr), Err(EvalError::BadSpecialForm("if"))));
     }
 
     // ===== define =====
@@ -734,10 +772,7 @@ mod tests {
         run_in(&define_maker, env.clone()).unwrap();
 
         // (define add-two (make-adder 2))
-        let call_maker = Expr::List(vec![
-            Expr::Symbol("make-adder".into()),
-            Expr::Integer(2),
-        ]);
+        let call_maker = Expr::List(vec![Expr::Symbol("make-adder".into()), Expr::Integer(2)]);
         let define_add_two = Expr::List(vec![
             Expr::Symbol("define".into()),
             Expr::Symbol("add-two".into()),
@@ -746,10 +781,7 @@ mod tests {
         run_in(&define_add_two, env.clone()).unwrap();
 
         // (add-two 5)
-        let call_add_two = Expr::List(vec![
-            Expr::Symbol("add-two".into()),
-            Expr::Integer(5),
-        ]);
+        let call_add_two = Expr::List(vec![Expr::Symbol("add-two".into()), Expr::Integer(5)]);
         assert_eq!(expect_int(run_in(&call_add_two, env).unwrap()), 7);
     }
 }

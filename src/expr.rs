@@ -74,8 +74,25 @@ impl Parser {
             Token::LeftParen => {
                 Ok(self.parse_list()?)
             }
+
+            Token::Plus => self.op_symbol("+"),
+            Token::Minus => self.op_symbol("-"),
+            Token::Mul => self.op_symbol("*"),
+            Token::Div => self.op_symbol("/"),
+            Token::Eq => self.op_symbol("="),
+            Token::Lt => self.op_symbol("<"),
+            Token::Lte => self.op_symbol("<="),
+            Token::Gt => self.op_symbol(">"),
+            Token::Gte => self.op_symbol(">="),
+
             _ => Err(ParserError::UnknownToken(cur))
         }
+    }
+
+    /// Advance past an operator token and produce the matching Symbol.
+    fn op_symbol(&mut self, name: &str) -> Result<Expr, ParserError> {
+        self.advance();
+        Ok(Expr::Symbol(name.into()))
     }
 
     fn parse_list(&mut self) -> Result<Expr, ParserError> {
@@ -171,6 +188,99 @@ mod tests {
         assert_eq!(
             parse_tokens(vec![Token::Boolean(false)]),
             vec![Expr::Boolean(false)]
+        );
+    }
+
+    // ===== operator tokens (design §3.2: operators are symbols) =====
+
+    #[test]
+    fn parses_plus_as_symbol() {
+        assert_eq!(
+            parse_tokens(vec![Token::Plus]),
+            vec![Expr::Symbol("+".into())]
+        );
+    }
+
+    #[test]
+    fn parses_minus_as_symbol() {
+        assert_eq!(
+            parse_tokens(vec![Token::Minus]),
+            vec![Expr::Symbol("-".into())]
+        );
+    }
+
+    #[test]
+    fn parses_mul_as_symbol() {
+        assert_eq!(
+            parse_tokens(vec![Token::Mul]),
+            vec![Expr::Symbol("*".into())]
+        );
+    }
+
+    #[test]
+    fn parses_div_as_symbol() {
+        assert_eq!(
+            parse_tokens(vec![Token::Div]),
+            vec![Expr::Symbol("/".into())]
+        );
+    }
+
+    #[test]
+    fn parses_eq_as_symbol() {
+        assert_eq!(
+            parse_tokens(vec![Token::Eq]),
+            vec![Expr::Symbol("=".into())]
+        );
+    }
+
+    #[test]
+    fn parses_lt_as_symbol() {
+        assert_eq!(
+            parse_tokens(vec![Token::Lt]),
+            vec![Expr::Symbol("<".into())]
+        );
+    }
+
+    #[test]
+    fn parses_lte_as_symbol() {
+        assert_eq!(
+            parse_tokens(vec![Token::Lte]),
+            vec![Expr::Symbol("<=".into())]
+        );
+    }
+
+    #[test]
+    fn parses_gt_as_symbol() {
+        assert_eq!(
+            parse_tokens(vec![Token::Gt]),
+            vec![Expr::Symbol(">".into())]
+        );
+    }
+
+    #[test]
+    fn parses_gte_as_symbol() {
+        assert_eq!(
+            parse_tokens(vec![Token::Gte]),
+            vec![Expr::Symbol(">=".into())]
+        );
+    }
+
+    #[test]
+    fn parses_arithmetic_call() {
+        // (+ 1 2)
+        assert_eq!(
+            parse_tokens(vec![
+                Token::LeftParen,
+                Token::Plus,
+                Token::Integer(1),
+                Token::Integer(2),
+                Token::RightParen,
+            ]),
+            vec![Expr::List(vec![
+                Expr::Symbol("+".into()),
+                Expr::Integer(1),
+                Expr::Integer(2),
+            ])]
         );
     }
 

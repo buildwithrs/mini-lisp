@@ -2,7 +2,17 @@ use std::num::ParseIntError;
 
 use thiserror::Error;
 
-use crate::{lexer::Token, value::Value};
+use crate::{lexer::Token};
+
+#[derive(Debug, Error)]
+pub enum LispError {
+    #[error("{0}")]
+    LexerError(#[from] LexerError),
+    #[error("{0}")]
+    ParserError(#[from] ParserError),
+    #[error("{0}")]
+    EvalError(#[from] EvalError),
+}
 
 
 #[derive(Debug, Error)]
